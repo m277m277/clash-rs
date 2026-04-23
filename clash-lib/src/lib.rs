@@ -381,6 +381,7 @@ async fn create_components(
     );
 
     debug!("initializing bootstrap outbounds");
+
     let plain_outbounds = OutboundManager::load_plain_outbounds(
         config
             .proxies
@@ -396,13 +397,12 @@ async fn create_components(
     // After OutboundManager is initialized it will be extended with all
     // handlers (plain + proxy groups + provider proxies), so DNS clients
     // and the HTTP client can use any of them for bootstrap traffic.
-    let outbound_registry: crate::proxy::utils::OutboundHandlerRegistry =
-        Arc::new(tokio::sync::RwLock::new(
-            plain_outbounds
-                .iter()
-                .map(|x| (x.name().to_string(), x.clone()))
-                .collect(),
-        ));
+    let outbound_registry = Arc::new(tokio::sync::RwLock::new(
+        plain_outbounds
+            .iter()
+            .map(|x| (x.name().to_string(), x.clone()))
+            .collect(),
+    ));
 
     let client =
         new_http_client(system_resolver.clone(), Some(outbound_registry.clone()))
