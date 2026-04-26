@@ -15,7 +15,7 @@ use bytes::Bytes;
 use futures::{Future, StreamExt, TryStreamExt};
 use tar;
 
-const TIMEOUT_DURATION: u64 = 30;
+const TIMEOUT_DURATION: u64 = 120;
 
 /// Creates a tar archive from a source path with the given target path.
 /// This is a blocking operation and should be called from `spawn_blocking`.
@@ -468,6 +468,18 @@ impl DockerTestRunnerBuilder {
         self.host_config.network_mode = new_host_config.network_mode;
         self.host_config.port_bindings = new_host_config.port_bindings;
 
+        self
+    }
+
+    /// Do not bind any host port.  Use this when the container is accessed
+    /// exclusively via its internal docker network IP (e.g. e2e tests that
+    /// spawn a clash-rs subprocess which connects via container IP).  Avoids
+    /// EADDRINUSE errors that occur when Docker tries to bind a host port in
+    /// the OS ephemeral range.
+    #[allow(dead_code)]
+    pub fn no_port(mut self) -> Self {
+        self.exposed_ports = vec![];
+        self.host_config.port_bindings = Some(HashMap::new());
         self
     }
 
