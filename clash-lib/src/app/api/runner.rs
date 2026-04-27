@@ -158,7 +158,7 @@ impl Runner for ApiRunner {
                         dns_enabled,
                     ),
                 )
-                .nest("/rules", handlers::rule::routes(router.clone()))
+                .nest("/rules", handlers::rule::routes(router))
                 .nest("/group", handlers::group::routes(outbound_manager.clone()))
                 .nest(
                     "/proxies",
@@ -168,7 +168,6 @@ impl Runner for ApiRunner {
                     "/providers/proxies",
                     handlers::provider::routes(outbound_manager),
                 )
-                .nest("/providers/rules", handlers::provider::rule_routes(router))
                 .nest(
                     "/connections",
                     handlers::connection::routes(statistics_manager),
@@ -188,6 +187,15 @@ impl Runner for ApiRunner {
                         "/ui/",
                         ServeDir::new(PathBuf::from(cwd).join(external_ui)),
                     );
+            } else {
+                #[cfg(feature = "dashboard")]
+                {
+                    use super::embedded_dashboard;
+                    router = router
+                        .route("/ui", get(|| async { Redirect::to("/ui/") }))
+                        .route("/ui/", get(embedded_dashboard::serve_index))
+                        .route("/ui/{*path}", get(embedded_dashboard::serve_asset));
+                }
             }
 
             // Create display strings before moving values

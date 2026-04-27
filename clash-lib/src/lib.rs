@@ -123,7 +123,6 @@ pub struct GlobalState {
     dns_listener: ArcRunner,
     reload_tx: mpsc::Sender<(Config, oneshot::Sender<()>)>,
     cwd: String,
-    config_path: Option<String>,
 }
 
 pub fn start_scaffold(opts: Options) -> Result<()> {
@@ -134,11 +133,6 @@ pub fn start_scaffold(opts: Options) -> Result<()> {
         TokioRuntime::SingleThread => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?,
-    };
-    let config_path: Option<String> = if let Config::File(ref p) = opts.config {
-        Some(p.clone())
-    } else {
-        None
     };
     let config: InternalConfig = opts.config.try_parse()?;
     let cwd = opts.cwd.unwrap_or_else(|| ".".to_string());
@@ -154,7 +148,7 @@ pub fn start_scaffold(opts: Options) -> Result<()> {
     );
 
     rt.block_on(async {
-        match start(config, cwd, config_path, log_tx).await {
+        match start(config, cwd, log_tx).await {
             Err(e) => {
                 eprintln!("start error: {e}");
                 Err(e)
@@ -208,7 +202,6 @@ pub fn setup_default_crypto_provider() {
 pub async fn start(
     config: InternalConfig,
     cwd: String,
-    config_path: Option<String>,
     log_tx: broadcast::Sender<LogEvent>,
 ) -> Result<()> {
     setup_default_crypto_provider();
@@ -237,7 +230,6 @@ pub async fn start(
         dns_listener: components.dns_listener.clone(),
         reload_tx,
         cwd: cwd.to_string_lossy().to_string(),
-        config_path,
     }));
 
     let mut api_listener: ArcRunner = Arc::new(app::api::ApiRunner::new(
