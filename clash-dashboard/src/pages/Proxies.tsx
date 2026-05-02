@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  getProxies, selectProxy, getProxyDelay, getProxyProviders,
+  getProxies, selectProxy, getGroupDelay, getProxyProviders,
   updateProxyProvider, healthcheckProvider, getConfigs,
 } from '../lib/api';
 import { RefreshCw, ChevronDown, ChevronUp, Check, Activity } from 'lucide-react';
@@ -45,7 +45,6 @@ export function Proxies() {
   const [testingGroups, setTestingGroups] = useState<Set<string>>(new Set());
   const [testingProviders, setTestingProviders] = useState<Set<string>>(new Set());
   const [updatingProviders, setUpdatingProviders] = useState<Set<string>>(new Set());
-  const [latencyMap, setLatencyMap] = useState<Record<string, number>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
 
@@ -148,17 +147,10 @@ export function Proxies() {
     setTestingGroups((s) => new Set(s).add(group.name));
     setExpanded((prev) => new Set(prev).add(group.name));
     try {
-      await Promise.allSettled(
-        group.all.map(async (name) => {
-          try {
-            const res = await getProxyDelay(name, TEST_URL, TEST_TIMEOUT);
-            setLatencyMap((prev) => ({ ...prev, [name]: res.delay }));
-          } catch {
-            setLatencyMap((prev) => ({ ...prev, [name]: 0 }));
-          }
-        })
-      );
+      await getGroupDelay(group.name, TEST_URL, TEST_TIMEOUT);
       await queryClient.invalidateQueries({ queryKey: ['proxies'] });
+    } catch {
+      // leave existing latency values unchanged on error
     } finally {
       setTestingGroups((s) => {
         const next = new Set(s);
@@ -313,7 +305,7 @@ export function Proxies() {
                         {group.all?.map((proxyName) => {
                           const proxy = proxies[proxyName];
                           const history = proxy?.history ?? [];
-                          const latency = latencyMap[proxyName] ?? getLastDelay(history);
+                          const latency = getLastDelay(history);
                           const isSelected = group.now === proxyName;
                           const latencyColor = getLatencyColor(latency);
 
@@ -453,7 +445,7 @@ export function Proxies() {
                       <div className="p-4 border-t" style={{ borderColor: 'rgba(0,0,0,0.06)' }}>
                         <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                           {provider.proxies.map((proxy) => {
-                            const latency = latencyMap[proxy.name] ?? getLastDelay(proxy.history);
+                            const latency = getLastDelay(proxy.history);
                             const latencyColor = getLatencyColor(latency);
                             return (
                               <div
