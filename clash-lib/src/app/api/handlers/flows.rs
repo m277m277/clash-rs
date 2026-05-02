@@ -61,11 +61,18 @@ pub struct FlowRecord {
     pub protocol: String,
     pub src_ips: Vec<String>,
     pub conn_count: usize,
+    pub active_count: usize,
+    pub closed_count: usize,
     pub upload_total: u64,
     pub download_total: u64,
     pub bytes_total: u64,
     pub rule: String,
+    pub rule_payload: String,
     pub chains: Vec<String>,
+    /// ISO 3166-1 alpha-2 country code from country mmdb.
+    pub country: Option<String>,
+    /// ASN org name from ASN mmdb.
+    pub asn: Option<String>,
     pub last_seen: DateTime<Utc>,
 }
 
@@ -84,40 +91,65 @@ struct FlowKey {
 // Per-key accumulator
 // ---------------------------------------------------------------------------
 
+/// Data extracted from one connection tracker, passed into `Acc::apply`.
+struct ConnEntry {
+    src_ip: String,
+    upload: u64,
+    download: u64,
+    rule: String,
+    rule_payload: String,
+    chains: Vec<String>,
+    country: Option<String>,
+    asn: Option<String>,
+    start_time: DateTime<Utc>,
+    is_active: bool,
+}
+
 struct Acc {
     src_ips: Vec<String>,
     conn_count: usize,
+    active_count: usize,
+    closed_count: usize,
     upload_total: u64,
     download_total: u64,
     rule: String,
+    rule_payload: String,
     chains: Vec<String>,
+    country: Option<String>,
+    asn: Option<String>,
     last_seen: DateTime<Utc>,
 }
 
 impl Acc {
-    fn merge(
-        &mut self,
-        src_ip: String,
-        upload: u64,
-        download: u64,
-        rule: &str,
-        chains: Vec<String>,
-        start_time: DateTime<Utc>,
-    ) {
-        if !src_ip.is_empty() && !self.src_ips.contains(&src_ip) {
-            self.src_ips.push(src_ip);
+    fn apply(&mut self, entry: ConnEntry) {
+        if !entry.src_ip.is_empty() && !self.src_ips.contains(&entry.src_ip) {
+            self.src_ips.push(entry.src_ip);
         }
         self.conn_count += 1;
-        self.upload_total += upload;
-        self.download_total += download;
-        if self.rule.is_empty() && !rule.is_empty() {
-            self.rule = rule.to_owned();
+        if entry.is_active {
+            self.active_count += 1;
+        } else {
+            self.closed_count += 1;
         }
-        if self.chains.is_empty() && !chains.is_empty() {
-            self.chains = chains;
+        self.upload_total += entry.upload;
+        self.download_total += entry.download;
+        if self.rule.is_empty() && !entry.rule.is_empty() {
+            self.rule = entry.rule;
         }
-        if start_time > self.last_seen {
-            self.last_seen = start_time;
+        if self.rule_payload.is_empty() && !entry.rule_payload.is_empty() {
+            self.rule_payload = entry.rule_payload;
+        }
+        if self.chains.is_empty() && !entry.chains.is_empty() {
+            self.chains = entry.chains;
+        }
+        if self.country.is_none() && entry.country.is_some() {
+            self.country = entry.country;
+        }
+        if self.asn.is_none() && entry.asn.is_some() {
+            self.asn = entry.asn;
+        }
+        if entry.start_time > self.last_seen {
+            self.last_seen = entry.start_time;
         }
     }
 }
@@ -137,7 +169,7 @@ async fn build_flow_records(
 
     // Helper to insert/merge one TrackerInfo into the map.
     macro_rules! merge_info {
-        ($info:expr, $chains:expr) => {{
+        ($info:expr, $chains:expr, $is_active:expr) => {{
             let info = $info;
             let dst_host = info.session_holder.destination.host();
             let dst_port = info.session_holder.destination.port();
@@ -145,9 +177,6 @@ async fn build_flow_records(
                 Network::Tcp => "tcp".to_string(),
                 Network::Udp => "udp".to_string(),
             };
-            let src_ip = info.session_holder.source.ip().to_string();
-            let upload = info.upload_total.load(Ordering::Relaxed);
-            let download = info.download_total.load(Ordering::Relaxed);
             let key = FlowKey {
                 dst_host,
                 dst_port,
@@ -156,20 +185,29 @@ async fn build_flow_records(
             let acc = map.entry(key).or_insert_with(|| Acc {
                 src_ips: Vec::new(),
                 conn_count: 0,
+                active_count: 0,
+                closed_count: 0,
                 upload_total: 0,
                 download_total: 0,
                 rule: String::new(),
+                rule_payload: String::new(),
                 chains: Vec::new(),
+                country: None,
+                asn: None,
                 last_seen: DateTime::<Utc>::MIN_UTC,
             });
-            acc.merge(
-                src_ip,
-                upload,
-                download,
-                &info.rule,
-                $chains,
-                info.start_time,
-            );
+            acc.apply(ConnEntry {
+                src_ip: info.session_holder.source.ip().to_string(),
+                upload: info.upload_total.load(Ordering::Relaxed),
+                download: info.download_total.load(Ordering::Relaxed),
+                rule: info.rule.clone(),
+                rule_payload: info.rule_payload.clone(),
+                chains: $chains,
+                country: info.session_holder.country.clone(),
+                asn: info.session_holder.asn.clone(),
+                start_time: info.start_time,
+                is_active: $is_active,
+            });
         }};
     }
 
@@ -178,7 +216,7 @@ async fn build_flow_records(
     let active = mgr.active_connections_snapshot().await;
     for info in &active {
         let chains = info.proxy_chain_holder.snapshot().await;
-        merge_info!(info, chains);
+        merge_info!(info, chains, true);
     }
 
     // Closed connections (ring buffer).
@@ -186,7 +224,7 @@ async fn build_flow_records(
         let closed = mgr.closed_flows_snapshot().await;
         for info in &closed {
             let chains = info.proxy_chain_holder.snapshot().await;
-            merge_info!(info, chains);
+            merge_info!(info, chains, false);
         }
     }
 
@@ -201,11 +239,16 @@ async fn build_flow_records(
                 protocol: key.protocol,
                 src_ips: acc.src_ips,
                 conn_count: acc.conn_count,
+                active_count: acc.active_count,
+                closed_count: acc.closed_count,
                 upload_total: acc.upload_total,
                 download_total: acc.download_total,
                 bytes_total,
                 rule: acc.rule,
+                rule_payload: acc.rule_payload,
                 chains: acc.chains,
+                country: acc.country,
+                asn: acc.asn,
                 last_seen: acc.last_seen,
             }
         })
